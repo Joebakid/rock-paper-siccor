@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { createGame, joinGame, makeMove, getGameState, resetGame, getAvailableGames } from "@/actions/game"
-import { createClient } from "@supabase/supabase-js"
+import { createClient, type SupabaseClient } from "@supabase/supabase-js" // Import SupabaseClient type
 import { v4 as uuidv4 } from "uuid"
 import {
   Dialog,
@@ -37,15 +37,6 @@ interface AvailableGame {
   created_at: string
 }
 
-// Initialize Supabase client for client-side Realtime
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY environment variables!")
-}
-const supabase = createClient(supabaseUrl!, supabaseAnonKey!)
-
 export default function RockPaperScissorsGame() {
   const [userId, setUserId] = useState<string | null>(null)
   const [gameId, setGameId] = useState<string | null>(null)
@@ -56,6 +47,7 @@ export default function RockPaperScissorsGame() {
   const [viewMode, setViewMode] = useState<"lobby" | "game">("lobby")
   const [joinGameInput, setJoinGameInput] = useState<string>("")
   const [playerId, setPlayerId] = useState<string | null>(null)
+  const [supabaseClient, setSupabaseClient] = useState<SupabaseClient | null>(null) // State for Supabase client
 
   const choices: Choice[] = ["rock", "paper", "scissors"]
 
@@ -67,6 +59,18 @@ export default function RockPaperScissorsGame() {
       localStorage.setItem("rps_userId", storedUserId)
     }
     setUserId(storedUserId)
+
+    // Initialize Supabase client only on the client-side
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      console.error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY environment variables!")
+      // Optionally, set an error state here to inform the user
+      setError("Supabase configuration missing. Please check environment variables.")
+      return
+    }
+    setSupabaseClient(createClient(supabaseUrl, supabaseAnonKey))
   }, [])
 
   // Fetch available games for the lobby
@@ -90,9 +94,9 @@ export default function RockPaperScissorsGame() {
 
   // Supabase Realtime subscription for game state
   useEffect(() => {
-    if (!gameId) return
+    if (!gameId || !supabaseClient) return // Ensure supabaseClient is initialized
 
-    const channel = supabase.channel(`game:${gameId}`)
+    const channel = supabaseClient.channel(`game:${gameId}`)
 
     channel
       .on(
@@ -108,9 +112,8 @@ export default function RockPaperScissorsGame() {
     // Initial fetch when gameId is set
     const fetchInitialGameState = async () => {
       const { game, error } = await getGameState(gameId)
-      if (error || !game) {
-        // Added !game check
-        setError(error || "Game not found or failed to load.")
+      if (error) {
+        setError(error)
         setGameId(null) // Go back to lobby if game not found
         setViewMode("lobby")
         return
@@ -120,9 +123,9 @@ export default function RockPaperScissorsGame() {
     fetchInitialGameState()
 
     return () => {
-      supabase.removeChannel(channel)
+      supabaseClient.removeChannel(channel)
     }
-  }, [gameId])
+  }, [gameId, supabaseClient]) // Add supabaseClient to dependency array
 
   const handleCreateGame = async () => {
     setError(null)
@@ -130,33 +133,15 @@ export default function RockPaperScissorsGame() {
       setError("User ID not initialized. Please refresh.")
       return
     }
-    const {
-      gameId: newGameId,
-      playerId: newPlayerId,
-      playerNumber: newPlayerNumber,
-      error: createError,
-    } = await createGame(userId)
-    if (createError) {
-      setError(createError)
+    const { gameId: newGameId, playerId: newPlayerId, playerNumber: newPlayerNumber, error } = await createGame(userId)
+    if (error) {
+      setError(error)
       return
     }
     setGameId(newGameId)
     setPlayerId(newPlayerId)
     setPlayerNumber(newPlayerNumber)
-    setViewMode("game") // Switch to game view immediately, loading state will handle currentGameState being null
-
-    // Fetch initial game state after setting IDs
-    const { game, error: fetchError } = await getGameState(newGameId!)
-    if (fetchError || !game) {
-      setError(fetchError || "Failed to fetch initial game state after creation.")
-      setGameId(null)
-      setPlayerId(null)
-      setPlayerNumber(null)
-      setCurrentGameState(null)
-      setViewMode("lobby") // Revert to lobby if initial fetch fails
-      return
-    }
-    setCurrentGameState(game)
+    setViewMode("game")
   }
 
   const handleJoinGame = async (idToJoin: string) => {
@@ -169,29 +154,16 @@ export default function RockPaperScissorsGame() {
       gameId: joinedGameId,
       playerId: joinedPlayerId,
       playerNumber: joinedPlayerNumber,
-      error: joinError,
+      error,
     } = await joinGame(idToJoin, userId)
-    if (joinError) {
-      setError(joinError)
+    if (error) {
+      setError(error)
       return
     }
     setGameId(joinedGameId)
     setPlayerId(joinedPlayerId)
     setPlayerNumber(joinedPlayerNumber)
-    setViewMode("game") // Switch to game view immediately, loading state will handle currentGameState being null
-
-    // Fetch initial game state after setting IDs
-    const { game, error: fetchError } = await getGameState(joinedGameId!)
-    if (fetchError || !game) {
-      setError(fetchError || "Failed to fetch initial game state after joining.")
-      setGameId(null)
-      setPlayerId(null)
-      setPlayerNumber(null)
-      setCurrentGameState(null)
-      setViewMode("lobby") // Revert to lobby if initial fetch fails
-      return
-    }
-    setCurrentGameState(game)
+    setViewMode("game")
   }
 
   const handleMakeMove = async (choice: Choice) => {
@@ -341,24 +313,7 @@ export default function RockPaperScissorsGame() {
     )
   }
 
-  // If we are in game view, but currentGameState is null, show loading
-  if (viewMode === "game" && (!gameId || !playerId || !playerNumber || !currentGameState)) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900 p-4">
-        <Card className="w-full max-w-md bg-white dark:bg-gray-800 shadow-lg rounded-lg">
-          <CardHeader className="text-center">
-            <CardTitle className="text-3xl font-bold text-gray-900 dark:text-white">Loading Game...</CardTitle>
-          </CardHeader>
-          <CardContent className="text-center text-gray-600 dark:text-gray-400">
-            <p>Please wait while we fetch the game state.</p>
-            {error && <p className="text-red-500 mt-4">{error}</p>}
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
-  // This block is only reached if viewMode is "game" AND currentGameState is NOT null
+  // Game View
   return (
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900 p-4">
       <Card className="w-full max-w-md bg-white dark:bg-gray-800 shadow-lg rounded-lg">
@@ -372,7 +327,6 @@ export default function RockPaperScissorsGame() {
           </p>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Now, currentGameState is guaranteed to be non-null here */}
           {currentGameState.status === "waiting" && (
             <div className="text-center text-xl font-medium text-gray-700 dark:text-gray-300">
               Waiting for another player to join...
@@ -425,7 +379,7 @@ export default function RockPaperScissorsGame() {
               </div>
 
               <div className="flex justify-center gap-4">
-                <Button onClick={() => handleResetGame()} className="px-6 py-3 text-lg" variant="secondary">
+                <Button onClick={handleResetGame} className="px-6 py-3 text-lg" variant="secondary">
                   Reset Game
                 </Button>
                 <Button onClick={() => setViewMode("lobby")} className="px-6 py-3 text-lg" variant="outline">
